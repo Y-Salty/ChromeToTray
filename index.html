@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>实时标签栏</title>
+<style>
+:root{
+  --page:#f1f3f4; --frame:#dee1e6; --tab:#f1f3f4; --tab-hover:#e9ebee; --active:#ffffff;
+  --text:#202124; --muted:#5f6368; --line:#c4c7cc; --accent:#1a73e8; --ok:#188038; --bad:#d93025;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --page:#1b1c1e; --frame:#202124; --tab:#202124; --tab-hover:#2d2e31; --active:#35363a;
+         --text:#e8eaed; --muted:#9aa0a6; --line:#3c4043; --accent:#8ab4f8; --ok:#81c995; --bad:#f28b82; }
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--page);color:var(--text);font:13px/1.4 "Segoe UI","Microsoft YaHei",Arial,sans-serif;padding:20px}
+.bar{display:flex;align-items:center;gap:12px;margin-bottom:16px;color:var(--muted)}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--bad)}
+.live .dot{background:var(--ok);box-shadow:0 0 0 0 var(--ok);animation:pulse 2s infinite}
+@keyframes pulse{70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
+.bar b{color:var(--text)}
+.hint{padding:40px;text-align:center;color:var(--muted)}
+
+.win{margin-bottom:18px;border-radius:10px;overflow:hidden;background:var(--active);
+     box-shadow:0 1px 3px rgba(0,0,0,.25);transition:opacity .2s}
+.win.gone{opacity:0}
+.win-head{display:flex;justify-content:space-between;padding:6px 12px;background:var(--frame);
+          font-size:12px;color:var(--muted)}
+.win.focused .win-head{color:var(--accent)}
+.strip{display:flex;align-items:flex-end;gap:0;padding:4px 8px 0;background:var(--frame);min-height:38px;overflow:hidden}
+
+.tab{position:relative;display:flex;align-items:center;gap:8px;flex:1 1 0;min-width:34px;max-width:240px;
+     height:34px;padding:0 10px;margin-right:-1px;border-radius:9px 9px 0 0;background:transparent;
+     overflow:hidden;white-space:nowrap;cursor:pointer;user-select:none;transition:background .12s}
+.tab:hover{background:var(--tab-hover)}
+.tab.active{background:var(--active);z-index:1}
+.tab:not(.active):not(:last-child)::after{content:"";position:absolute;right:0;top:9px;bottom:9px;width:1px;background:var(--line)}
+.tab.active::before,.tab.active::after{content:"";position:absolute;bottom:0;width:9px;height:9px;pointer-events:none}
+.tab.pinned{flex:0 0 38px;max-width:38px;padding:0;justify-content:center}
+.tab.pinned .title,.tab.pinned .state,.tab.pinned .x{display:none}
+.x{flex:0 0 18px;width:18px;height:18px;border-radius:50%;display:grid;place-items:center;font-size:10px;
+   color:var(--muted);opacity:0;transition:opacity .1s,background .1s}
+.tab:hover .x,.tab.active .x{opacity:1}
+.x:hover{background:var(--line);color:var(--text)}
+.tab.pending{opacity:.55}
+.tab.grouped{box-shadow:inset 0 3px 0 var(--gc)}
+.tab.incognito .title{font-style:italic}
+.tab.enter{animation:grow .22s ease-out}
+.tab.closing{animation:shrink .2s ease-in forwards;pointer-events:none}
+@keyframes grow{from{flex-grow:0;min-width:0;max-width:0;opacity:0;padding:0}}
+@keyframes shrink{to{flex-grow:0;min-width:0;max-width:0;opacity:0;padding:0}}
+
+.fav{flex:0 0 16px;width:16px;height:16px;display:grid;place-items:center;border-radius:3px;
+     font-size:10px;font-weight:600;color:#fff;background:var(--muted)}
+.fav img{width:16px;height:16px;border-radius:3px}
+.tab.loading .fav{background:none;border:2px solid var(--line);border-top-color:var(--accent);
+                  border-radius:50%;animation:spin .8s linear infinite;font-size:0}
+.tab.loading .fav img{display:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+.title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:12px}
+.tab:not(.active) .title{color:var(--muted)}
+.state{flex:0 0 auto;font-size:12px;color:var(--accent)}
+.url{padding:8px 14px;font-size:12px;color:var(--muted);background:var(--active);
+     border-top:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.url b{color:var(--text);font-weight:500}
+</style>
+</head>
+<body>
+<div class="bar" id="status"><span class="dot"></span><span id="stext">连接中…</span></div>
+<div id="wins"><div class="hint" id="hint">等待扩展推送数据…<br>请确认 Chrome 里已加载 Tab Monitor 扩展。</div></div>
+
+<script>
+const GC={grey:"#9aa0a6",blue:"#1a73e8",red:"#d93025",yellow:"#f9ab00",green:"#188038",
+          pink:"#d01884",purple:"#9334e6",cyan:"#007b83",orange:"#fa903e"};
+const winsEl=document.getElementById("wins");
+const tabEls=new Map();   // tabId -> element
+const winEls=new Map();   // windowId -> {root, head, strip, url}
+let lastTs=0;
+
+async function closeTab(el){
+  if(el._tabId==null || el.classList.contains("pending")) return;
+  el.classList.add("pending");   // 等待标签真正关闭;若页面弹出确认,会一直保持半透明直到超时
+  try{
+    await fetch("/close",{method:"POST",headers:{"Content-Type":"application/json"},
+                          body:JSON.stringify({tabId:el._tabId,wait:5})});
+  }catch(e){}
+  el.classList.remove("pending");
+}
+function mkTab(){
+  const el=document.createElement("div");
+  el.className="tab enter";
+  el.innerHTML='<span class="fav"></span><span class="title"></span><span class="state"></span><span class="x" title="关闭标签页">✕</span>';
+  el.querySelector(".x").addEventListener("click",e=>{ e.stopPropagation(); closeTab(el); });
+  el.addEventListener("mousedown",e=>{ if(e.button===1) e.preventDefault(); });   // 禁止中键自动滚动
+  el.addEventListener("auxclick",e=>{ if(e.button===1){ e.preventDefault(); closeTab(el); } }); // 中键关闭
+  el.addEventListener("click",()=>{
+    if(el._tabId==null) return;
+    fetch("/activate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({tabId:el._tabId})});
+  });
+  el.addEventListener("animationend",e=>{ if(e.animationName==="grow") el.classList.remove("enter"); });
+  return el;
+}
+function setFav(el,t){
+  const fav=el.firstChild, key=t.favIconUrl||"";
+  if(fav._key===key) return;
+  fav._key=key; fav.textContent=""; 
+  const letter=(t.title||t.url||"?").trim().charAt(0).toUpperCase()||"?";
+  if(key && /^(https?:|data:)/.test(key)){
+    const img=new Image(); img.src=key; img.alt="";
+    img.onerror=()=>{fav.textContent=letter};
+    fav.appendChild(img);
+  } else fav.textContent=letter;
+}
+function updTab(el,t,groups){
+  el._tabId=t.id;
+  el.classList.toggle("active",t.active);
+  el.classList.toggle("pinned",t.pinned);
+  el.classList.toggle("loading",t.status==="loading");
+  el.classList.toggle("incognito",t.incognito);
+  const g=groups.get(t.groupId);
+  el.classList.toggle("grouped",!!g);
+  if(g) el.style.setProperty("--gc",GC[g.color]||GC.grey); else el.style.removeProperty("--gc");
+  el.children[1].textContent=t.title||t.url||"新标签页";
+  el.children[2].textContent=t.audible?(t.muted?"🔇":"🔊"):(t.muted?"🔇":"");
+  el.title=(t.title||"")+"\n"+(t.url||"");
+  setFav(el,t);
+}
+function mkWin(id){
+  const root=document.createElement("div"); root.className="win";
+  root.innerHTML='<div class="win-head"><span></span><span></span></div><div class="strip"></div><div class="url"></div>';
+  winsEl.appendChild(root);
+  return {root,head:root.children[0],strip:root.children[1],url:root.children[2]};
+}
+
+function render(d){
+  document.getElementById("hint")?.remove();
+  const groups=new Map((d.groups||[]).map(g=>[g.id,g]));
+  const byWin=new Map();
+  for(const t of d.tabs){ if(!byWin.has(t.windowId)) byWin.set(t.windowId,[]); byWin.get(t.windowId).push(t); }
+  const winMeta=new Map((d.windows||[]).map(w=>[w.id,w]));
+  const alive=new Set();
+
+  // 窗口
+  [...byWin.keys()].forEach((wid,idx)=>{
+    alive.add(wid);
+    let w=winEls.get(wid); if(!w){ w=mkWin(wid); winEls.set(wid,w); }
+    const meta=winMeta.get(wid)||{};
+    w.root.classList.toggle("focused",!!meta.focused);
+    const list=byWin.get(wid).sort((a,b)=>a.index-b.index);
+    w.head.children[0].textContent=`窗口 ${idx+1}${meta.incognito?" · 无痕":""}${meta.focused?" · 当前焦点":""}`;
+    w.head.children[1].textContent=`${list.length} 个标签页`;
+
+    // 标签:创建/更新/排序(跳过正在关闭的元素)
+    let cursor=w.strip.firstChild;
+    for(const t of list){
+      let el=tabEls.get(t.id);
+      if(!el){ el=mkTab(); tabEls.set(t.id,el); }
+      updTab(el,t,groups);
+      while(cursor && cursor.classList.contains("closing")) cursor=cursor.nextSibling;
+      if(cursor===el) cursor=cursor.nextSibling; else w.strip.insertBefore(el,cursor);
+    }
+    const act=list.find(t=>t.active);
+    w.url.innerHTML=act?`<b></b> `:"";
+    if(act){ w.url.firstChild.textContent=act.title||"新标签页"; w.url.append(" — "+act.url); }
+  });
+
+  // 已关闭的标签:播放收缩动画后移除
+  const live=new Set(d.tabs.map(t=>t.id));
+  for(const [id,el] of tabEls){
+    if(!live.has(id)){
+      tabEls.delete(id);
+      el.classList.add("closing");
+      setTimeout(()=>el.remove(),230);
+    }
+  }
+  // 已关闭的窗口
+  for(const [wid,w] of winEls){
+    if(!alive.has(wid)){
+      winEls.delete(wid);
+      w.root.classList.add("gone");
+      setTimeout(()=>w.root.remove(),220);
+    }
+  }
+  document.getElementById("stext").innerHTML=
+    `<b>实时连接中</b> · ${alive.size} 个窗口 · ${d.tabs.length} 个标签页`;
+}
+
+function connect(){
+  const es=new EventSource("/events");
+  const st=document.getElementById("status");
+  es.onopen=()=>{st.classList.add("live")};
+  es.onmessage=e=>{
+    const d=JSON.parse(e.data);
+    st.classList.add("live");
+    if(d.ts) render(d);
+  };
+  es.onerror=()=>{ st.classList.remove("live"); document.getElementById("stext").textContent="连接已断开,正在重连…"; };
+}
+connect();
+</script>
+</body>
+</html>

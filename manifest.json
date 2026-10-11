@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Tab Monitor",
+  "version": "2.1",
+  "description": "实时把所有窗口的标签页状态推送到本机 127.0.0.1:8765",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvARApXzt1t9OjLm9McDwMxyRI4HrmpPwKGGpXo/bF/FRlyTwpj1keC/O2vGviXoIoui+CM5af8prkcO3zcqCSUTZQa/t1t54om2t1UdKiajCqdtEHTr1afLwWLIFPd/Tbui1ThIGadZOnUskspTiS+SQUsey5Gn0cvZdlDBsPW9hMJYrYw4gNhyTe47aRdScBh8BIcMk4IVB4KAhcDJDQagXohXJKyaXcxVsCc1+rA+aRpv9HAJx7H9MIN/6eobErClRCjZnMHpdSZRNxGsNcYxaFaaheAeznEy1ZlB05j0qL+PC1hu81MTIu6qQGln1BYJ3P9qLXp0MGvPGEBIkTQIDAQAB",
+  "permissions": [
+    "tabs",
+    "tabGroups",
+    "alarms",
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8765/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}
